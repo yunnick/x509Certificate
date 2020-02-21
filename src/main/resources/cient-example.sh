@@ -1,0 +1,206 @@
+#!/bin/bash
+#
+# Copyright © 2016-2019 The Thingsboard Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+usage() {
+    echo "This script generates client public/private rey pair, extracts them to a no-password RSA pem file,"
+    echo "and imports server public key to client keystore"
+    echo "usage: ./client.keygen.sh [-p file]"
+    echo "    -p | --props | --properties file  Properties file. default value is ./keygen.properties"
+	echo "    -h | --help  | ?                  Show this message"
+}
+
+PROPERTIES_FILE=keygen.properties
+
+while true; do
+  case "$1" in
+    -p | --props | --properties) PROPERTIES_FILE=$2 ;
+                                shift
+                                ;;
+    -h | --help | ?)            usage
+                                exit 0
+                                ;;
+    -idx ) FROM_IDX=$2;
+           shift;
+	   ;;
+    -n ) TOTAL_NUM=$2;
+         shift;
+	 ;;
+    -- ) shift;
+         break
+         ;;
+    * )  break
+         ;;
+  esac
+  shift
+done
+
+. $PROPERTIES_FILE
+
+mkCert(){
+	if [ -f $CLIENT_FILE_PREFIX.jks ] || [ -f $CLIENT_FILE_PREFIX.pub.pem ] || [ -f $CLIENT_FILE_PREFIX.nopass.pem ] || [ -f $CLIENT_FILE_PREFIX.pem ] || [ -f $CLIENT_FILE_PREFIX.p12 ];
+	then
+	while :
+	   do
+	       read -p "Output files from previous server.keygen.sh script run found. Overwrite? [Y/N]: " response
+	       case $response in
+		[nN]|[nN][oO])
+		    echo "Skipping"
+		    echo "Done"
+		    exit 0
+		    ;;
+		[yY]|[yY][eE]|[yY][eE]|[sS]|[yY]|"")
+		    echo "Cleaning up files"
+		    rm -rf $CLIENT_FILE_PREFIX.jks
+		    rm -rf $CLIENT_FILE_PREFIX.pub.pem
+		    rm -rf $CLIENT_FILE_PREFIX.nopass.pem
+		    rm -rf $CLIENT_FILE_PREFIX.pem
+		    rm -rf $CLIENT_FILE_PREFIX.p12
+		    break;
+		    ;;
+		*)  echo "Please reply 'yes' or 'no'"
+		    ;;
+		esac
+	    done
+	fi
+
+	echo "Generating SSL Key Pair..."
+
+	idx=$1
+        CLIENT_KEY_IDX_ALIAS=$CLIENT_KEY_ALIAS$idx
+	echo "CLIENT_KEY_IDX_ALIAS is $CLIENT_KEY_IDX_ALIAS"
+
+	keytool -genkeypair -v \
+	  -alias $CLIENT_KEY_IDX_ALIAS \
+	  -keystore $CLIENT_FILE_PREFIX.jks \
+	  -keypass $CLIENT_KEY_PASSWORD \
+	  -storepass $CLIENT_KEYSTORE_PASSWORD \
+	  -keyalg RSA \
+	  -keysize 2048 \
+	  -validity 9999 \
+	  -dname "CN=$DOMAIN_SUFFIX, OU=$ORGANIZATIONAL_UNIT, O=$ORGANIZATION, L=$CITY, ST=$STATE_OR_PROVINCE, C=$TWO_LETTER_COUNTRY_CODE"
+
+
+	echo "Importing server public key to $CLIENT_FILE_PREFIX.jks"
+	keytool --importcert \
+	   -file ../$SERVER_FILE_PREFIX.cer \
+	   -keystore $CLIENT_FILE_PREFIX.jks \
+	   -alias $SERVER_KEY_ALIAS \
+	   -keypass $SERVER_KEY_PASSWORD \
+	   -storepass $CLIENT_KEYSTORE_PASSWORD \
+	   -noprompt
+
+	echo "Exporting client cert.cet from $CLIENT_FILE_PREFIX.jks"
+	keytool -export \
+	  -alias $CLIENT_KEY_IDX_ALIAS \
+	  -file $CLIENT_FILE_PREFIX.cer \
+	  -keystore $CLIENT_FILE_PREFIX.jks \
+	  -storepass $CLIENT_KEYSTORE_PASSWORD \
+	  -keypass $CLIENT_KEYSTORE_PASSWORD
+
+	echo "Exporting client cert.crt from $CLIENT_FILE_PREFIX.jks"
+	keytool -export \
+	  -alias $CLIENT_KEY_IDX_ALIAS \
+	  -file $CLIENT_FILE_PREFIX.crt \
+	  -keystore $CLIENT_FILE_PREFIX.jks \
+	  -storepass $CLIENT_KEYSTORE_PASSWORD \
+	  -keypass $CLIENT_KEYSTORE_PASSWORD
+
+	echo "Deleting client by alias $CLIENT_KEY_IDX_ALIAS from $SERVER_FILE_PREFIX.jks"
+	#keytool -delete -keystore  ../$SERVER_FILE_PREFIX.jks -alias $CLIENT_KEY_IDX_ALIAS -storepass $SERVER_KEYSTORE_PASSWORD
+
+	echo "Importing client public key to $SERVER_FILE_PREFIX.jks"
+	#keytool --importcert \
+	#   -file $CLIENT_FILE_PREFIX.cer \
+	#   -keystore ../$SERVER_FILE_PREFIX.jks \
+	#   -alias $CLIENT_KEY_IDX_ALIAS \
+	#   -keypass $CLIENT_KEYSTORE_PASSWORD \
+	#   -storepass $CLIENT_KEYSTORE_PASSWORD \
+	#   -noprompt
+
+	echo "Converting keystore to BKS，need bcprov-ext-jdk15on-164.jar since:http://www.bouncycastle.org/latest_releases.html"
+    keytool -importkeystore  \
+      -srckeystore $CLIENT_FILE_PREFIX.jks \
+      -destkeystore $CLIENT_FILE_PREFIX.bks \
+      -srcalias $CLIENT_KEY_IDX_ALIAS \
+      -srcstoretype jks \
+      -deststoretype BKS \
+      -srcstorepass $CLIENT_KEY_PASSWORD \
+      -deststorepass $CLIENT_KEY_PASSWORD \
+      -srckeypass $CLIENT_KEYSTORE_PASSWORD \
+      -destkeypass $CLIENT_KEYSTORE_PASSWORD \
+      -provider org.bouncycastle.jce.provider.BouncyCastleProvider
+
+    keytool -importkeystore  \
+      -srckeystore $CLIENT_FILE_PREFIX.jks \
+      -destkeystore $CLIENT_FILE_PREFIX.bks \
+      -srcalias $SERVER_KEY_ALIAS \
+      -srcstoretype jks \
+      -deststoretype BKS \
+      -srcstorepass $CLIENT_KEYSTORE_PASSWORD \
+      -deststorepass $CLIENT_KEYSTORE_PASSWORD \
+      -provider org.bouncycastle.jce.provider.BouncyCastleProvider
+
+	echo "Converting keystore to pkcs12"
+	keytool -importkeystore  \
+	  -srckeystore $CLIENT_FILE_PREFIX.jks \
+	  -destkeystore $CLIENT_FILE_PREFIX.p12 \
+	  -srcalias $CLIENT_KEY_IDX_ALIAS \
+	  -srcstoretype jks \
+	  -deststoretype pkcs12 \
+	  -srcstorepass $CLIENT_KEYSTORE_PASSWORD \
+	  -deststorepass $CLIENT_KEY_PASSWORD \
+	  -srckeypass $CLIENT_KEY_PASSWORD \
+	  -destkeypass $CLIENT_KEY_PASSWORD
+
+	echo "Converting pkcs12 to pem"
+	openssl pkcs12 -in $CLIENT_FILE_PREFIX.p12 \
+	  -out $CLIENT_FILE_PREFIX.pem \
+	  -passin pass:$CLIENT_KEY_PASSWORD \
+	  -passout pass:$CLIENT_KEY_PASSWORD \
+
+	echo "Exporting no-password pem certificate"
+	openssl rsa -in $CLIENT_FILE_PREFIX.pem -out $CLIENT_FILE_PREFIX.nopass.pem -passin pass:$CLIENT_KEY_PASSWORD
+	tail -n +$(($(grep -m1 -n -e '-----BEGIN CERTIFICATE' $CLIENT_FILE_PREFIX.pem | cut -d: -f1) )) \
+	  $CLIENT_FILE_PREFIX.pem >> $CLIENT_FILE_PREFIX.nopass.pem
+
+	echo "Exporting client public key"
+	tail -n +$(($(grep -m1 -n -e '-----BEGIN CERTIFICATE' $CLIENT_FILE_PREFIX.pem | cut -d: -f1) )) \
+	  $CLIENT_FILE_PREFIX.pem >> $CLIENT_FILE_PREFIX.pub.pem
+}
+
+TO_IDX=$(expr $FROM_IDX + $TOTAL_NUM - 1)
+rootDir=`pwd`
+for i in $(seq $FROM_IDX $TO_IDX)
+do
+    echo "==========================="
+    echo "===============$i $rootDir"
+    cd $rootDir
+    CLIENT_CERT_DIR=mqttclientcert$i
+    if [ -d $CLIENT_CERT_DIR ];
+    then
+       echo "exist"
+       cd $CLIENT_CERT_DIR
+    else
+       echo "not exist"
+       mkdir $CLIENT_CERT_DIR
+       cd $CLIENT_CERT_DIR
+       mkCert $i
+    fi
+done
+
+echo "Done."
+
